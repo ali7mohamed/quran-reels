@@ -467,6 +467,8 @@ option { background:#10101a; }
     <label>🔊</label>
     <input type="range" min="0" max="100" value="80" oninput="setVol(this.value)">
   </div>
+  <!-- Waveform visualizer -->
+  <canvas id="waveCanvas" height="48" style="width:100%;margin-top:10px;border-radius:8px;background:#0c0c18;display:block;"></canvas>
 </div>
 
 <!-- GENERATE -->
@@ -665,33 +667,21 @@ const SURAHS = [
   {n:114,name:"الناس",en:"An-Nas",ay:6,topic:"الاستعاذة من الشيطان"},
 ];
 
-const READERS = [
-  {id:1,  name:'عبد الباسط عبد الصمد', style:'مرتل'},
-  {id:2,  name:'محمود خليل الحصري',    style:'مرتل'},
-  {id:3,  name:'محمد صديق المنشاوي',   style:'مرتل'},
-  {id:5,  name:'مشاري راشد العفاسي',   style:'مرتل'},
-  {id:6,  name:'سعد الغامدي',           style:'مرتل'},
-  {id:7,  name:'ماهر المعيقلي',         style:'مرتل'},
-  {id:9,  name:'عبدالرحمن السديس',      style:'مرتل'},
-  {id:10, name:'سعود الشريم',           style:'مرتل'},
-  {id:11, name:'نافع الصغير',           style:'مرتل'},
-  {id:12, name:'أحمد الحواشي',          style:'مرتل'},
-  {id:13, name:'ياسر الدوسري',          style:'مرتل'},
-  {id:17, name:'خالد الجليل',           style:'مرتل'},
-  {id:18, name:'هاني الرفاعي',          style:'مرتل'},
-];
+// Readers loaded dynamically from yousefheiba API
+let READERS = [];
 
 // State
 let state = {
   surahNum: null,
   from: null,
   to: null,
-  readerId: 1,
-  readerName: 'عبد الباسط عبد الصمد',
+  readerId: null,     // yousefheiba reciter_id string
+  readerName: '',
+  readerSlug: '',
   verseText: '',
   playing: false,
   audioLoaded: false,
-  captions: {},   // platform -> caption text
+  captions: {},
   hashtags: [],
   keywords: [],
 };
@@ -704,7 +694,7 @@ const audioUrlCache = {};
 // ═══════════════════════════════════════
 (function init() {
   populateSurahs();
-  renderReaders();
+  loadReadersFromAPI();
   audioEl.ontimeupdate = onTimeUpdate;
   audioEl.oncanplay = onCanPlay;
   audioEl.onerror = onAudioError;
@@ -719,20 +709,59 @@ function populateSurahs() {
   });
 }
 
+async function loadReadersFromAPI() {
+  const list = document.getElementById('readersList');
+  try {
+    const r = await fetch('https://quran.yousefheiba.com/api/reciters',
+      { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    // API returns array of reciters
+    const reciters = Array.isArray(d) ? d : (d.data || d.reciters || []);
+    READERS = reciters.map(rc => ({
+      id: rc.id || rc.reciter_id,
+      name: rc.name_ar || rc.name || rc.reciter_name || rc.arabic_name || rc.short_name,
+      slug: rc.short_name || rc.slug || rc.en_name || String(rc.id),
+      style: rc.style || rc.riwaya || 'مرتل',
+    })).filter(r => r.name);
+    renderReaders();
+  } catch(e) {
+    // static fallback
+    READERS = [
+      {id:92,  name:'عبد الباسط عبد الصمد', slug:'Abdul_Basit_Murattal_64kbps', style:'مرتل'},
+      {id:1,   name:'محمود خليل الحصري',    slug:'Husary_64kbps',               style:'مرتل'},
+      {id:10,  name:'محمد صديق المنشاوي',   slug:'Menshawi_16kbps',             style:'مرتل'},
+      {id:132, name:'مشاري راشد العفاسي',   slug:'Alafasy_64kbps',              style:'مرتل'},
+      {id:42,  name:'سعد الغامدي',           slug:'Saad_Al-Ghamdi_64kbps',       style:'مرتل'},
+      {id:134, name:'ماهر المعيقلي',         slug:'MaherAlMuaiqly64kbps',        style:'مرتل'},
+      {id:115, name:'عبدالرحمن السديس',      slug:'Sudais_64kbps',               style:'مرتل'},
+      {id:138, name:'ياسر الدوسري',          slug:'YasserAd-Dussary_128kbps',    style:'مرتل'},
+      {id:141, name:'خالد الجليل',           slug:'Khalid_Jalil_64kbps',         style:'مرتل'},
+      {id:144, name:'هاني الرفاعي',          slug:'HaniRifai_64kbps',            style:'مرتل'},
+    ];
+    renderReaders();
+  }
+}
+
 function renderReaders() {
   const list = document.getElementById('readersList');
   list.innerHTML = '';
-  READERS.forEach(r => {
+  READERS.forEach((r, i) => {
     const btn = document.createElement('button');
-    btn.className = 'reader-chip' + (r.id === state.readerId ? ' active' : '');
+    const isFirst = i === 0;
+    btn.className = 'reader-chip' + (isFirst ? ' active' : '');
     btn.textContent = r.name;
+    if (isFirst && !state.readerId) {
+      state.readerId = r.id;
+      state.readerName = r.name;
+      state.readerSlug = r.slug;
+    }
     btn.onclick = () => {
       document.querySelectorAll('.reader-chip').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.readerId = r.id;
       state.readerName = r.name;
+      state.readerSlug = r.slug;
       document.getElementById('readerNameDisp').textContent = r.name;
-      // reload audio with new reader
       if (state.surahNum) loadAudio();
     };
     list.appendChild(btn);
@@ -784,28 +813,51 @@ async function onVerseChange() {
 }
 
 async function fetchVerses(surahNum, from, to) {
-  const key = surahNum;
   if (!window._verseCache) window._verseCache = {};
-  if (!window._verseCache[key]) {
-    try {
-      const r = await fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/quran-uthmani`,
-        { signal: AbortSignal.timeout(8000) });
+  // Try fetching specific ayah range from yousefheiba API
+  const cacheKey = `${surahNum}_${from}_${to}`;
+  if (window._verseCache[cacheKey]) return window._verseCache[cacheKey];
+
+  const texts = [];
+  try {
+    // yousefheiba: /api/ayah?number=X uses global ayah number
+    // Calculate global ayah number start
+    const SURAH_STARTS = [0,1,7,293,493,669,789,954,1160,1235,1364,1473,1596,1707,1750,1802,1901,2029,2140,2250,2348,2483,2595,2673,2791,2855,3082,3159,3251,3340,3409,3483,3556,3629,3683,3728,3811,3993,4081,4161,4246,4301,4354,4443,4502,4537,4584,4613,4642,4671,4735,4796,4845,4908,4971,5034,5104,5150,5163,5186,5199,5217,5228,5240,5252,5262,5272,5323,5375,5418,5447,5475,5495,5551,5600,5672,5712,5758,5800,5829,5849,5869,5890,5910,5931,5941,5950,5959,5968,5977,5988,5998,6008,6018,6027,6040,6048,6060,6079,6090,6099,6109,6118,6125,6131,6138,6146,6157,6168,6176,6179,6188,6197,6205,6211,6216,6222,6227,6236];
+    const surahStart = SURAH_STARTS[surahNum] || 0;
+    for (let v = from; v <= to; v++) {
+      const globalNum = surahStart + v;
+      const r = await fetch(`https://quran.yousefheiba.com/api/ayah?number=${globalNum}`,
+        { signal: AbortSignal.timeout(6000) });
       const d = await r.json();
-      window._verseCache[key] = d.data.ayahs;
-    } catch(e) {
-      return [`﴿ سورة ${SURAHS.find(s=>s.n===surahNum)?.name} - الآيات ${from} إلى ${to} ﴾`];
+      const text = d?.text || d?.ayah?.text || d?.[0]?.text || d?.data?.text;
+      if (text) texts.push(text);
     }
-  }
-  return window._verseCache[key]
-    .filter(a => a.numberInSurah >= from && a.numberInSurah <= to)
-    .map(a => a.text);
+    if (texts.length) {
+      window._verseCache[cacheKey] = texts;
+      return texts;
+    }
+  } catch(e) {}
+
+  // Fallback: alquran.cloud
+  try {
+    const r = await fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/quran-uthmani`,
+      { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    const ayahs = d?.data?.ayahs || [];
+    const result = ayahs
+      .filter(a => a.numberInSurah >= from && a.numberInSurah <= to)
+      .map(a => a.text);
+    if (result.length) { window._verseCache[cacheKey] = result; return result; }
+  } catch(e) {}
+
+  return [`﴿ ${SURAHS.find(s=>s.n===surahNum)?.name} - آية ${from}${to>from?' إلى '+to:''} ﴾`];
 }
 
 // ═══════════════════════════════════════
 // AUDIO
 // ═══════════════════════════════════════
 async function loadAudio() {
-  if (!state.surahNum) return;
+  if (!state.surahNum || !state.readerId) return;
   const key = `${state.readerId}_${state.surahNum}`;
   state.audioLoaded = false;
   document.getElementById('player-card').style.display = '';
@@ -815,48 +867,58 @@ async function loadAudio() {
   audioEl.src = '';
 
   let url = audioUrlCache[key];
+
+  // 1. Try yousefheiba: get reciter audio list then find surah
   if (!url) {
     try {
       const r = await fetch(
-        `https://api.quran.com/api/v4/chapter_recitations/${state.readerId}/${state.surahNum}`,
+        `https://quran.yousefheiba.com/api/reciterAudio?reciter_id=${state.readerId}`,
         { signal: AbortSignal.timeout(8000) }
       );
-      if (r.ok) {
-        const d = await r.json();
-        url = d?.audio_file?.audio_url;
+      const d = await r.json();
+      const files = Array.isArray(d) ? d : (d.data || d.audio || d.files || []);
+      // find the surah file
+      const surahFile = files.find(f =>
+        f.surah_number == state.surahNum ||
+        f.surah == state.surahNum ||
+        f.chapter == state.surahNum ||
+        f.chapter_id == state.surahNum ||
+        parseInt(f.name) == state.surahNum
+      );
+      if (surahFile) {
+        url = surahFile.url || surahFile.audio_url || surahFile.link || surahFile.path;
+      }
+      // if not found by surah, try direct index
+      if (!url && files.length >= state.surahNum) {
+        const f = files[state.surahNum - 1];
+        url = f?.url || f?.audio_url || f?.link;
       }
     } catch(e) {}
   }
 
-  // fallback: mp3quran.net
+  // 2. Fallback: everyayah CDN (reliable, no CORS)
   if (!url) {
-    try {
-      const r2 = await fetch('https://www.mp3quran.net/api/v3/moshaf?language=ar',
-        { signal: AbortSignal.timeout(8000) });
-      const d2 = await r2.json();
-      const reciters = d2?.reciters || [];
-      // pick first available
-      for (const rc of reciters) {
-        if (rc.moshaf?.length) {
-          const server = rc.moshaf[0].server;
-          const sStr = String(state.surahNum).padStart(3,'0');
-          url = server + sStr + '.mp3';
-          break;
-        }
-      }
-    } catch(e) {}
-  }
-
-  if (!url) {
-    document.getElementById('audioStatus').textContent = 'تعذر تحميل الصوت';
-    return;
+    const slugMap = {
+      92:  'Abdul_Basit_Murattal_64kbps',
+      1:   'Husary_64kbps',
+      10:  'Menshawi_16kbps',
+      132: 'Alafasy_64kbps',
+      42:  'Saad_Al-Ghamdi_64kbps',
+      134: 'MaherAlMuaiqly64kbps',
+      115: 'Sudais_64kbps',
+      138: 'YasserAd-Dussary_128kbps',
+      141: 'Khalid_Jalil_64kbps',
+      144: 'HaniRifai_64kbps',
+    };
+    const slug = slugMap[state.readerId] || state.readerSlug || 'Alafasy_64kbps';
+    const sStr = String(state.surahNum).padStart(3,'0');
+    url = `https://download.quranicaudio.com/quran/${slug.replace(/_\d+kbps.*/,'').toLowerCase()}/${sStr}.mp3`;
   }
 
   audioUrlCache[key] = url;
   audioEl.src = url;
   audioEl.load();
 
-  // seek to approximate verse after metadata
   audioEl.onloadedmetadata = () => {
     const surah = SURAHS.find(s => s.n === state.surahNum);
     if (surah && state.from > 1) {
@@ -922,6 +984,63 @@ function seekAudio(e) {
 function setVol(v) { audioEl.volume = v / 100; }
 
 // ═══════════════════════════════════════
+// WAVEFORM VISUALIZER
+// ═══════════════════════════════════════
+let audioCtx, analyser, source, vizRaf;
+
+function startVisualizer() {
+  if (audioCtx) return; // already running
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 128;
+    source = audioCtx.createMediaElementSource(audioEl);
+    source.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    drawWave();
+  } catch(e) { console.warn('visualizer error', e); }
+}
+
+function drawWave() {
+  const canvas = document.getElementById('waveCanvas');
+  if (!canvas) return;
+  canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+  const cw = canvas.width, ch = canvas.height * window.devicePixelRatio;
+  canvas.height = ch;
+  const ctx2 = canvas.getContext('2d');
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+
+  function loop() {
+    vizRaf = requestAnimationFrame(loop);
+    analyser.getByteFrequencyData(buf);
+    ctx2.clearRect(0,0,cw,ch);
+    ctx2.fillStyle = '#0c0c18';
+    ctx2.fillRect(0,0,cw,ch);
+    const barW = Math.ceil(cw / buf.length);
+    buf.forEach((val, i) => {
+      const pct = val / 255;
+      const h = pct * ch * 0.85;
+      const alpha = 0.4 + pct * 0.6;
+      // gold gradient bars
+      const grad = ctx2.createLinearGradient(0, ch, 0, ch - h);
+      grad.addColorStop(0, `rgba(201,168,76,${alpha})`);
+      grad.addColorStop(1, `rgba(232,201,122,${alpha * 0.6})`);
+      ctx2.fillStyle = grad;
+      ctx2.fillRect(i * barW, ch - h, barW - 1, h);
+    });
+  }
+  loop();
+}
+
+// hook into togglePlay to start visualizer
+const _origTogglePlay = togglePlay;
+window.togglePlay = function() {
+  _origTogglePlay();
+  if (!audioCtx) startVisualizer();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+};
+
+// ═══════════════════════════════════════
 // QUICK LOAD
 // ═══════════════════════════════════════
 async function quickLoad(surah, from, to) {
@@ -972,21 +1091,27 @@ async function generateContent() {
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
+        max_tokens: 1200,
         messages: [{ role: 'user', content: prompt }]
       })
     });
+    if (!resp.ok) throw new Error('API ' + resp.status);
     const data = await resp.json();
-    const raw = data.content?.map(c => c.text || '').join('');
-    // strip any markdown fences
+    const raw = (data.content || []).map(c => c.text || '').join('');
     const clean = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
+    // extract JSON object
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('no JSON');
+    const parsed = JSON.parse(jsonMatch[0]);
     renderResults(parsed);
   } catch(e) {
-    // Fallback: generate locally without API
+    console.warn('API error, using fallback:', e);
     renderResults(generateFallback(surah, verseRef));
   }
 
